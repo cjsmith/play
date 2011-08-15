@@ -229,7 +229,12 @@ public class Evolutions extends PlayPlugin {
             }
         }
     }
-    
+ 
+    public static boolean useDDLTransactions() {
+        System.out.println("supports ddl transactions = " + Play.configuration.get("db.supportsDDLTransactions"));
+        return "true".equals(Play.configuration.get("db.supportsDDLTransactions"));
+    }
+ 
     public static synchronized void resolve(int revision) {
         try {
             execute("update play_evolutions set state = 'applied' where state = 'applying_up' and id = " + revision);
@@ -242,11 +247,18 @@ public class Evolutions extends PlayPlugin {
     public static synchronized boolean applyScript(boolean runScript) {
         try {
             Connection connection = getNewConnection();
+            if (!useDDLTransactions()){
+              connection.setAutoCommit(true); // Yes we want auto-commit
+            } else {
+              connection.setAutoCommit(false); // Yes we want auto-commit
+            }
             int applying = -1;
             try {
                 for (Evolution evolution : getEvolutionScript()) {
                     applying = evolution.revision;
-
+                    if(useDDLTransactions()){
+                      execute("begin"); 
+                    }
                     // Insert into logs
                     if (evolution.applyUp) {
                         PreparedStatement ps = connection.prepareStatement("insert into play_evolutions values(?, ?, ?, ?, ?, ?, ?)");
@@ -276,6 +288,7 @@ public class Evolutions extends PlayPlugin {
                     } else {
                         execute("delete from play_evolutions where id = " + evolution.revision);
                     }
+                    execute("commit");
                 }
                 return true;
             } catch (Exception e) {
@@ -284,10 +297,14 @@ public class Evolutions extends PlayPlugin {
                     SQLException ex = (SQLException) e;
                     message += " [ERROR:" + ex.getErrorCode() + ", SQLSTATE:" + ex.getSQLState() + "]";
                 }
-                PreparedStatement ps = connection.prepareStatement("update play_evolutions set last_problem = ? where id = ?");
-                ps.setString(1, message);
-                ps.setInt(2, applying);
-                ps.execute();
+                if(useDDLTransactions()) {
+                    execute("rollback");
+                } else {
+                    PreparedStatement ps = connection.prepareStatement("update play_evolutions set last_problem = ? where id = ?");
+                    ps.setString(1, message);
+                    ps.setInt(2, applying);
+                    ps.execute();
+                }
                 closeConnection(connection);
                 Logger.error(e, "Can't apply evolution");
                 return false;
@@ -487,7 +504,6 @@ public class Evolutions extends PlayPlugin {
 
     static Connection getNewConnection() throws SQLException {
         Connection connection = getDatasource().getConnection();
-        connection.setAutoCommit(true); // Yes we want auto-commit
         return connection;
     }
 
